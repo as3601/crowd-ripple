@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>slides</title>
+<style>
+  :root { --ink:#1d2327; --muted:#5f6b73; --accent:#0b6e69; --bg:#f6f5f1; --line:#e3e1da;
+          --seats:#1f9d55; --standing:#d9a400; --crowded:#e8590c; --packed:#c62828; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink); font-family:"Segoe UI", system-ui, sans-serif; }
+  .s { display:none; height:100%; box-sizing:border-box; padding:90px 120px; flex-direction:column; justify-content:center; }
+  .s.on { display:flex; }
+  .up { opacity:0; transform:translateY(14px); animation:up .7s ease-out forwards; }
+  .d1{animation-delay:.25s}.d2{animation-delay:.6s}.d3{animation-delay:.95s}.d4{animation-delay:1.3s}.d5{animation-delay:1.65s}
+  @keyframes up { to { opacity:1; transform:none; } }
+  h1 { font-size:76px; margin:0; letter-spacing:-.02em; }
+  h2 { font-size:46px; margin:0 0 30px; letter-spacing:-.01em; line-height:1.15; }
+  .sub { font-size:30px; color:var(--muted); margin-top:14px; }
+  .meta { font-size:20px; color:var(--muted); margin-top:46px; border-top:1px solid var(--line); padding-top:18px; }
+  .logo { display:flex; align-items:center; gap:22px; }
+  .logo svg { width:78px; height:78px; color:var(--accent); }
+  .bar { display:flex; height:14px; width:520px; border-radius:7px; overflow:hidden; margin-top:34px; }
+  .bar span { flex:1; }
+  .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:22px; }
+  .step { background:#fff; border:1px solid var(--line); border-radius:14px; padding:24px; }
+  .step b { display:block; font-size:44px; color:var(--accent); }
+  .step p { margin:8px 0 0; font-size:21px; line-height:1.35; }
+  .step .n { font-size:15px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
+  .lead { font-size:26px; color:var(--muted); line-height:1.45; max-width:1050px; }
+  .lead b { color:var(--ink); }
+  .ripple { margin-top:30px; font-size:23px; background:#fff; border-left:5px solid var(--crowded); padding:16px 20px; border-radius:0 10px 10px 0; max-width:1100px; line-height:1.4; }
+  .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:22px; margin-top:10px; }
+  .stat { background:#fff; border:1px solid var(--line); border-radius:14px; padding:22px; }
+  .stat b { font-size:46px; display:block; }
+  .stat span { font-size:20px; color:var(--muted); }
+</style>
+</head>
+<body>
+<section class="s" id="title">
+  <div class="logo up"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7" opacity=".55"/><circle cx="12" cy="12" r="11" opacity=".25"/></svg><h1>Crowd Ripple</h1></div>
+  <div class="sub up d1">Delhi bus journeys ranked on travel time <i>and</i> how crowded the bus gets</div>
+  <div class="bar up d2"><span style="background:var(--seats)"></span><span style="background:var(--standing)"></span><span style="background:var(--crowded)"></span><span style="background:var(--packed)"></span></div>
+  <div class="meta up d3">Transport Stack Hackathon 2026 &nbsp;·&nbsp; Problem 2: Crowdedness-aware journey planner</div>
+</section>
+
+<section class="s" id="problem">
+  <h2 class="up">A bus that's 10 minutes faster isn't better<br>if you can't get on it.</h2>
+  <div class="lead up d1">Journey planners rank buses by time. Delhi commuters also want to know: <b>will I get a seat?</b>
+    <b>Will the first bus be too full to board?</b></div>
+  <div class="stats up d2">
+    <div class="stat"><b>2.56 M</b><span>ticket records, 1–31 Oct 2026</span></div>
+    <div class="stat"><b>1,244</b><span>routes with crowding, by stretch and hour</span></div>
+    <div class="stat"><b>2,958</b><span>GTFS routes in the planner</span></div>
+  </div>
+</section>
+
+<section class="s" id="how">
+  <h2 class="up">How it works</h2>
+  <div class="grid">
+    <div class="step up d1"><span class="n">Step 1</span><b>Match</b><p>Each ticket's route and stops placed on the GTFS route (name, fuzzy and map matching)</p></div>
+    <div class="step up d2"><span class="n">Step 2</span><b>Count</b><p>Board +, alight −, running total along the route = riders on every stretch, every hour</p></div>
+    <div class="step up d3"><span class="n">Step 3</span><b>Scale</b><p>App tickets are a sample. ×39 for pink-ticket, pass and cash riders, checked against bus capacity</p></div>
+    <div class="step up d4"><span class="n">Step 4</span><b>Level</b><p>Seats · standing · crowded · packed, with seat chance and a confidence label</p></div>
+  </div>
+  <div class="ripple up d5"><b>The Ripple idea:</b> crowding spreads. A full bus leaves people behind, who then crowd the next bus and the
+    parallel routes. The planner counts that as extra waiting; operators can simulate it.</div>
+</section>
+
+<section class="s" id="end">
+  <div class="logo up"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7" opacity=".55"/><circle cx="12" cy="12" r="11" opacity=".25"/></svg><h1>Crowd Ripple</h1></div>
+  <div class="stats up d1" style="margin-top:36px">
+    <div class="stat"><b id="v1">0.70</b><span>rank correlation, hold-out week</span></div>
+    <div class="stat"><b id="v2">91%</b><span>riders within one crowding level</span></div>
+    <div class="stat"><b>9am · 6pm</b><span>peaks found in the data, weekends quieter</span></div>
+  </div>
+  <div class="meta up d2">Open source: Python · pandas · FastAPI · Leaflet &nbsp;·&nbsp; Commuter planner, operator console, documented API</div>
+</section>
+<script>
+  const id = location.hash.slice(1) || "title";
+  document.getElementById(id).classList.add("on");
+  const q = new URLSearchParams(location.search);
+  if (q.get("v1")) document.getElementById("v1").textContent = q.get("v1");
+  if (q.get("v2")) document.getElementById("v2").textContent = q.get("v2");
+</script>
+</body>
+</html>

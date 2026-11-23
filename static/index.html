@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crowd Ripple · Delhi bus planner</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7" opacity=".55"/><circle cx="12" cy="12" r="11" opacity=".25"/></svg>
+    Crowd Ripple
+  </div>
+  <span class="muted small">Delhi buses: pick on time <i>and</i> how crowded it gets</span>
+  <nav><a class="on" href="/">Plan a trip</a><a href="/operator">Operator console</a><a href="/docs" target="_blank">API</a></nav>
+</header>
+<div class="layout">
+  <aside class="side">
+    <div class="card">
+      <label class="f">From</label>
+      <div class="ac"><input id="from" type="text" placeholder="Stop name, or click the map" autocomplete="off"><div class="ac-list" hidden></div></div>
+      <label class="f">To</label>
+      <div class="ac"><input id="to" type="text" placeholder="Stop name, or click the map" autocomplete="off"><div class="ac-list" hidden></div></div>
+      <label class="f">Leaving at</label>
+      <input id="depart" type="datetime-local">
+      <label class="f">What matters more?</label>
+      <input id="comfort" type="range" min="0" max="1" step="0.05" value="0.5">
+      <div class="slider-labels"><span>Get there fastest</span><span>Balanced</span><span>Avoid crowds</span></div>
+      <div style="height:10px"></div>
+      <button class="primary" id="go">Find buses</button>
+      <div class="chips" id="examples"></div>
+    </div>
+    <div class="card" style="padding:10px 14px">
+      <div class="legend">
+        <span class="lvl"><i class="dot c-seats"></i>Seats available</span>
+        <span class="lvl"><i class="dot c-standing"></i>Standing room</span>
+        <span class="lvl"><i class="dot c-crowded"></i>Crowded</span>
+        <span class="lvl"><i class="dot c-packed"></i>Packed</span>
+      </div>
+      <div class="small muted" style="margin-top:6px">Usual crowding for that day type and hour, learnt from ~2.5 million October 2026 tickets. The coloured strip shows each part of the ride.</div>
+    </div>
+    <div id="results"></div>
+  </aside>
+  <main><div id="map"></div></main>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const LV = {seats:"Seats available", standing:"Standing room", crowded:"Crowded", packed:"Packed", unknown:"No data"};
+const COL = k => getComputedStyle(document.documentElement).getPropertyValue("--" + k).trim();
+const $ = s => document.querySelector(s);
+const map = L.map("map", {zoomControl: true}).setView([28.63, 77.21], 11);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+  {attribution: "&copy; OpenStreetMap contributors", maxZoom: 19}).addTo(map);
+let layer = L.layerGroup().addTo(map), marks = L.layerGroup().addTo(map);
+const place = {from: null, to: null};
+let last = null;
+
+function pad(n){return String(n).padStart(2,"0")}
+(function initDate(){ // default: next weekday at the current time (data describes typical days)
+  const d = new Date(); $("#depart").value = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+})();
+
+const EX = [
+  {label:"Anand Vihar → Connaught Place, 6 pm", from:"Anand Vihar ISBT Terminal", to:"Super Bazar Conn. Place", at:"2026-10-27T18:00"},
+  {label:"Kashmere Gate → Nehru Place, 8:30 am", from:"ISBT Kashmere Gate", to:"Nehru Place Terminal", at:"2026-10-27T08:30"},
+  {label:"Badarpur → Saket, 9 am", from:"Badarpur Border", to:"Saket Crossing", at:"2026-10-27T09:00"},
+];
+EX.forEach(e => { const b = document.createElement("button"); b.className="chip"; b.textContent=e.label;
+  b.onclick = async () => { await setByName("from", e.from); await setByName("to", e.to); $("#depart").value = e.at; plan(); };
+  $("#examples").appendChild(b); });
+
+async function setByName(which, name){
+  const r = await (await fetch("/api/stops?limit=1&q=" + encodeURIComponent(name))).json();
+  if (r[0]) setPlace(which, r[0].lat, r[0].lon, r[0].name);
+}
+function setPlace(which, lat, lon, label){
+  place[which] = {lat, lon, label}; $("#" + which).value = label; drawMarks();
+}
+function drawMarks(){
+  marks.clearLayers();
+  for (const [k, c] of [["from", "#0b6e69"], ["to", "#1d2327"]]) if (place[k])
+    L.circleMarker([place[k].lat, place[k].lon], {radius: 8, color: "#fff", weight: 3, fillColor: c, fillOpacity: 1})
+      .bindTooltip(k === "from" ? "Start" : "Destination").addTo(marks);
+}
+map.on("click", e => {
+  const which = !place.from || (place.from && place.to) ? "from" : "to";
+  if (which === "from" && place.to) place.to = null, $("#to").value = "";
+  setPlace(which, e.latlng.lat, e.latlng.lng, `${e.latlng.lat.toFixed(5)},${e.latlng.lng.toFixed(5)}`);
+  if (place.from && place.to) plan();
+});
+
+// autocomplete
+for (const id of ["from", "to"]) {
+  const inp = $("#" + id), list = inp.nextElementSibling; let t;
+  inp.addEventListener("input", () => { clearTimeout(t); place[id] = null; t = setTimeout(async () => {
+    const q = inp.value.trim(); if (q.length < 2) { list.hidden = true; return; }
+    const r = await (await fetch("/api/stops?q=" + encodeURIComponent(q))).json();
+    list.innerHTML = ""; r.forEach(s => { const d = document.createElement("div"); d.textContent = s.name;
+      d.onmousedown = () => { setPlace(id, s.lat, s.lon, s.name); list.hidden = true; map.panTo([s.lat, s.lon]); }; list.appendChild(d); });
+    list.hidden = !r.length; }, 150); });
+  inp.addEventListener("blur", () => setTimeout(() => list.hidden = true, 150));
+}
+$("#go").onclick = plan;
+$("#comfort").addEventListener("change", () => { if (place.from && place.to) plan(); });
+
+function q(p){ return p ? `${p.lat},${p.lon}` : null }
+async function plan(){
+  if (!place.from || !place.to) { $("#results").innerHTML = `<div class="card empty">Choose a start and a destination (type a stop or click the map twice).</div>`; return; }
+  $("#results").innerHTML = `<div class="card empty"><span class="spinner"></span> Finding buses…</div>`;
+  const url = `/journeys?from=${encodeURIComponent(q(place.from))}&to=${encodeURIComponent(q(place.to))}&depart=${encodeURIComponent($("#depart").value)}&comfort=${$("#comfort").value}`;
+  const r = await fetch(url); const j = await r.json(); last = j;
+  if (!r.ok) { $("#results").innerHTML = `<div class="card empty">${j.detail || "Something went wrong"}</div>`; return; }
+  render(j);
+}
+function strip(o){
+  const parts = []; let tot = 0;
+  o.legs.filter(l => l.type === "bus").forEach(l => l.stretches.forEach(s => { parts.push(s); tot += s.min; }));
+  return `<div class="strip" title="Crowding along the ride">${parts.map(s => `<span class="c-${s.level}" style="width:${100 * s.min / tot}%" title="${s.from} → ${s.to}: ${LV[s.level]}${s.load != null ? " (~" + Math.round(s.load) + " on board)" : ""}"></span>`).join("")}</div>`;
+}
+function pct(x){ return x == null ? "–" : Math.round(x * 100) + "%" }
+function render(j){
+  const R = $("#results");
+  if (!j.options.length) { R.innerHTML = `<div class="card empty">${j.reason || "No journeys found."}</div>`; layer.clearLayers(); return; }
+  const dtName = {weekday: "a weekday", saturday: "a Saturday", sunday: "a Sunday"}[j.daytype];
+  let h = `<div class="small muted" style="margin:4px 2px 8px">${j.options.length} options · typical ${dtName} at ${j.depart}</div>`;
+  j.options.forEach((o, i) => {
+    const c = o.crowding;
+    h += `<div class="card opt" data-i="${i}">
+      <div>${(o.tags || []).map(t => `<span class="tag">${t}</span>`).join("")}</div>
+      <div class="head"><span class="time">${o.total_min} min</span><span class="arr">${o.depart} → ${o.arrive}</span></div>
+      <div class="routes">${o.legs.filter(l => l.type === "bus" || l.min >= 1).map(l => l.type === "bus" ? `<span class="rbadge">${l.route}</span>` : `<span class="walk">🚶 ${Math.round(l.min)}′</span>`).join(`<span class="walk">›</span>`)}</div>
+      ${strip(o)}
+      <div class="row" style="justify-content:space-between">
+        <span class="lvl t-${c.worst_level}"><i class="dot c-${c.worst_level}"></i>${c.worst_level === "unknown" ? "No crowding data" : "At worst: " + c.worst_label}</span>
+        <span class="small muted">Seat chance ${pct(c.seat_chance)}</span>
+      </div>
+      <div class="facts" style="margin-top:6px">
+        <span>Walk ${o.walk_min}′</span><span>Wait ${o.wait_min}′${o.left_behind_extra_min >= 1 ? ` <b class="t-packed">(+${Math.round(o.left_behind_extra_min)}′ full buses may pass you)</b>` : ""}</span>
+        <span>On bus ${o.ride_min}′</span><span>${o.transfers ? o.transfers + " change" : "Direct"}</span>
+        <span>Confidence: ${c.confidence}</span>
+      </div>
+      ${c.worst_stretch && ["crowded","packed"].includes(c.worst_level) ? `<div class="small" style="margin-top:6px">Busiest part: <b>${c.worst_stretch}</b></div>` : ""}
+      <div class="legs">${o.legs.map(legHtml).join("")}</div>
+    </div>`;
+  });
+  if (j.compare) {
+    const cm = j.compare;
+    h += `<div class="note">Same top option at <b>${cm.hour}</b>: ${cm.total_min} min, <span class="t-${cm.worst_level}"><b>${cm.worst_label}</b></span> at worst, seat chance ${pct(cm.seat_chance)}. Timing changes crowding more than route choice on many trips.</div>`;
+  }
+  R.innerHTML = h;
+  R.querySelectorAll(".opt").forEach(el => el.onclick = () => select(+el.dataset.i));
+  select(0);
+}
+function legHtml(l){
+  if (l.type === "walk") return l.min < 1 ? "" : `<div class="leg"><div class="ic">🚶</div><div>Walk ${Math.round(l.min)} min to <b>${l.to}</b></div></div>`;
+  const lv = Object.entries(l.minutes_by_level).map(([k, v]) => `<span class="t-${k}">${LV[k]} ${Math.round(v)}′</span>`).join(" · ");
+  return `<div class="leg"><div class="ic">🚌</div><div><span class="rbadge">${l.route}</span> ${l.ac_share > 0.5 ? '<span class="small muted">AC</span>' : ''}
+    <div><b>${l.from}</b> ${l.board_at} → <b>${l.to}</b> ${l.alight_at} <span class="muted small">(${l.stops} stops)</span></div>
+    <div class="small muted">Every ~${Math.round(l.headway)} min · wait ~${Math.round(l.wait)} min${l.p_full >= 0.05 ? ` · ${Math.round(l.p_full * 100)}% of buses arrive full` : ""}</div>
+    <div class="small">${lv}</div></div></div>`;
+}
+function select(i){
+  document.querySelectorAll(".opt").forEach(el => el.classList.toggle("sel", +el.dataset.i === i));
+  layer.clearLayers();
+  const o = last.options[i], b = [];
+  o.legs.forEach(l => {
+    if (l.type === "walk") { L.polyline(l.path, {color: COL("muted"), weight: 3, dashArray: "4 6"}).addTo(layer); b.push(...l.path); return; }
+    l.stretches.forEach((s, k) => {
+      const seg = [l.path[k], l.path[k + 1]];
+      L.polyline(seg, {color: "#fff", weight: 9, opacity: .9}).addTo(layer);
+      L.polyline(seg, {color: COL(s.level), weight: 6}).bindTooltip(`${l.route}: ${s.from} → ${s.to}<br><b>${LV[s.level]}</b>${s.load != null ? " · ~" + Math.round(s.load) + " on board" : ""}`).addTo(layer);
+    });
+    L.circleMarker(l.path[0], {radius: 5, color: "#fff", weight: 2, fillColor: COL("ink"), fillOpacity: 1}).bindTooltip("Board " + l.route + " at " + l.from).addTo(layer);
+    b.push(...l.path);
+  });
+  if (b.length) map.fitBounds(L.latLngBounds(b), {padding: [40, 40]});
+}
+</script>
+</body>
+</html>

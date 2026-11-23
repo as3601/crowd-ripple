@@ -1,0 +1,7 @@
+data/raw/
+data/gtfs/
+data/processed/
+__pycache__/
+*.pyc
+.venv/
+demo/build/

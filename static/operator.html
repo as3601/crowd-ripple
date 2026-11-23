@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crowd Ripple · Operator console</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  .layout { grid-template-columns: 470px 1fr; }
+  .hourbar { display: flex; align-items: center; gap: 8px; }
+  .hourbar b { min-width: 52px; font-size: 18px; }
+  svg.chart text { fill: var(--muted); font-size: 10px; }
+  .pane { display: none; } .pane.on { display: block; }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7" opacity=".55"/><circle cx="12" cy="12" r="11" opacity=".25"/></svg>
+    Crowd Ripple
+  </div>
+  <span class="muted small">Operator console: where buses are overloaded, and what one disruption does next</span>
+  <nav><a href="/">Plan a trip</a><a class="on" href="/operator">Operator console</a><a href="/docs" target="_blank">API</a></nav>
+</header>
+<div class="layout">
+  <aside class="side">
+    <div class="card">
+      <div class="row">
+        <select id="dt" style="width:140px"><option value="weekday">Weekday</option><option value="saturday">Saturday</option><option value="sunday">Sunday</option></select>
+        <div class="hourbar" style="flex:1"><input id="hour" type="range" min="0" max="23" value="9"><b id="hourl">09:00</b></div>
+        <button class="ghost" id="play" title="Play the day">▶</button>
+      </div>
+      <div class="kpis" style="margin-top:10px" id="kpis"></div>
+    </div>
+    <div class="tabs"><button data-p="hot" class="on">Add a bus where?</button><button data-p="ripple">Ripple simulator</button><button data-p="route">Route</button><button data-p="val">Checks</button></div>
+
+    <div class="pane on" id="p-hot">
+      <div class="card">
+        <b>Where one more bus helps most</b>
+        <div class="small muted" style="margin:2px 0 8px">Ranked by crowded passenger-minutes removed by adding a single bus in this hour (seat = 1×, standing 1.3×, crowded 1.6×, packed 2.1× perceived time). Click a row for the route.</div>
+        <table class="t" id="hot"></table>
+      </div>
+    </div>
+
+    <div class="pane" id="p-ripple">
+      <div class="card">
+        <b>What happens next?</b>
+        <div class="small muted" style="margin:2px 0 8px">Push a disruption through the network and see the 1st, 2nd and 3rd-order crowding effects over time, with an action for each.</div>
+        <label class="f">Event</label>
+        <select id="ev">
+          <option value="cancel">Bus breaks down / trip cancelled on a route</option>
+          <option value="surge">Demand surge at a place (metro disruption, event ends)</option>
+          <option value="add">Add one bus on a route</option>
+        </select>
+        <div id="ev-route"><label class="f">Route</label><div class="ac"><input id="route" type="text" value="525DOWN" autocomplete="off"><div class="ac-list" hidden></div></div></div>
+        <div id="ev-surge" hidden>
+          <label class="f">Where (click the map)</label><input id="where" type="text" value="28.66750,77.22850" placeholder="lat,lon">
+          <label class="f">Extra riders in the hour</label><input id="riders" type="number" value="3000" min="100" step="100">
+          <div class="chips"><button class="chip" data-w="28.66750,77.22850">Kashmere Gate</button><button class="chip" data-w="28.64700,77.31560">Anand Vihar</button><button class="chip" data-w="28.54900,77.25180">Nehru Place</button><button class="chip" data-w="28.63280,77.21950">Rajiv Chowk</button></div>
+        </div>
+        <div style="height:10px"></div>
+        <button class="primary" id="run">Run ripple</button>
+      </div>
+      <div id="rip"></div>
+    </div>
+
+    <div class="pane" id="p-route">
+      <div class="card">
+        <div class="ac"><input id="rq" type="text" placeholder="Route, e.g. 534UP" autocomplete="off"><div class="ac-list" hidden></div></div>
+        <div id="rinfo" class="small muted" style="margin-top:6px">Pick a route to see crowding on every stretch, every hour.</div>
+        <div class="heat" id="heat"></div>
+      </div>
+    </div>
+
+    <div class="pane" id="p-val"><div id="val"><div class="card empty"><span class="spinner"></span></div></div></div>
+  </aside>
+  <main><div id="map"></div></main>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const LV = {seats:"Seats available", standing:"Standing room", crowded:"Crowded", packed:"Packed", unknown:"No data"};
+const KEYS = ["seats","standing","crowded","packed"];
+const COL = k => getComputedStyle(document.documentElement).getPropertyValue("--" + k).trim();
+const $ = s => document.querySelector(s);
+const pad = n => String(n).padStart(2, "0");
+const map = L.map("map", {preferCanvas: true}).setView([28.62, 77.19], 11);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {attribution: "&copy; OpenStreetMap contributors", maxZoom: 19}).addTo(map);
+const net = L.layerGroup().addTo(map), over = L.layerGroup().addTo(map);
+let pane = "hot";
+
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll(".pane").forEach(p => p.classList.toggle("on", p.id === "p-" + b.dataset.p));
+  pane = b.dataset.p; if (pane === "val") loadVal();
+});
+const dt = () => $("#dt").value, hr = () => +$("#hour").value;
+$("#hour").oninput = () => { $("#hourl").textContent = pad(hr()) + ":00"; };
+$("#hour").onchange = refresh; $("#dt").onchange = refresh;
+let timer = null;
+$("#play").onclick = () => {
+  if (timer) { clearInterval(timer); timer = null; $("#play").textContent = "▶"; return; }
+  $("#play").textContent = "⏸";
+  timer = setInterval(() => { $("#hour").value = (hr() + 1) % 24; $("#hourl").textContent = pad(hr()) + ":00"; refresh(); }, 1600);
+};
+
+async function refresh(){
+  const [nw, hot] = await Promise.all([
+    fetch(`/api/crowding/network?daytype=${dt()}&hour=${hr()}`).then(r => r.json()),
+    fetch(`/api/hotspots?daytype=${dt()}&hour=${hr()}&top=15`).then(r => r.json())]);
+  net.clearLayers();
+  const mx = Math.max(1, ...nw.map(s => s.riders));
+  const tot = {seats:0, standing:0, crowded:0, packed:0}; let all = 0;
+  nw.slice().reverse().forEach(s => {
+    tot[s.level] += s.riders; all += s.riders;
+    L.polyline([s.a, s.b], {color: COL(s.level), weight: 1.5 + 6 * Math.sqrt(s.riders / mx), opacity: .85})
+      .bindTooltip(`${s.from} → ${s.to}<br>${s.riders.toLocaleString()} riders/hour · typical rider: <b>${LV[s.level]}</b> (~${s.avg_load} on board)<br>Most crowded route here: <b>${s.route}</b> ${LV[s.worst_level]} (~${s.load})`).addTo(net);
+  });
+  $("#kpis").innerHTML = KEYS.map(k => `<div class="kpi"><span class="lvl t-${k}"><i class="dot c-${k}"></i>${LV[k]}</span><b>${all ? Math.round(100 * tot[k] / all) : 0}%</b><span class="small muted">of riders on the ${nw.length.toLocaleString()} busiest stretches</span></div>`).join("");
+  $("#hot").innerHTML = `<tr><th>Route</th><th>Relief</th><th>Peak load</th><th>Buses/h</th><th>Worst stretch</th></tr>` +
+    hot.map(h => `<tr class="click" data-r="${h.route}"><td><span class="rbadge">${h.route}</span></td><td><b>${h.relief_pax_min.toLocaleString()}</b><div class="small muted">pax-min</div></td><td>${h.peak_load}</td><td>${h.buses_per_hour}</td><td class="small">${h.worst_from} → ${h.worst_to}<div class="muted">confidence ${h.confidence}</div></td></tr>`).join("");
+  document.querySelectorAll("#hot tr.click").forEach(tr => tr.onclick = () => openRoute(tr.dataset.r));
+  if (pane === "route" && $("#rq").value) openRoute($("#rq").value, false);
+}
+
+// ---------------------------------------------------------------- route heatmap
+function ac(inp, src, pick){
+  const list = inp.nextElementSibling; let t;
+  inp.addEventListener("input", () => { clearTimeout(t); t = setTimeout(async () => {
+    const r = await (await fetch(src + encodeURIComponent(inp.value))).json();
+    list.innerHTML = ""; r.slice(0, 10).forEach(s => { const d = document.createElement("div"); d.textContent = s.name || s;
+      d.onmousedown = () => { inp.value = s.name || s; list.hidden = true; pick && pick(s); }; list.appendChild(d); });
+    list.hidden = !r.length; }, 150); });
+  inp.addEventListener("blur", () => setTimeout(() => list.hidden = true, 150));
+}
+ac($("#rq"), "/api/routes?q=", r => openRoute(r));
+ac($("#route"), "/api/routes?q=");
+
+async function openRoute(name, switchTab = true){
+  if (switchTab) document.querySelector('.tabs button[data-p="route"]').click();
+  $("#rq").value = name;
+  const r = await fetch(`/api/crowding/route/${encodeURIComponent(name)}?daytype=${dt()}`); const p = await r.json();
+  if (!r.ok || !p.has_crowding) { $("#rinfo").textContent = p.detail || "No crowding data for this route."; $("#heat").innerHTML = ""; return; }
+  const n = p.stops.length - 1, cw = 13, ch = Math.max(7, Math.min(14, 520 / n)), left = 150, top = 20;
+  let s = `<svg class="chart" width="${left + 24 * cw + 10}" height="${top + n * ch + 30}">`;
+  for (let h = 0; h < 24; h += 3) s += `<text x="${left + h * cw}" y="12">${pad(h)}</text>`;
+  for (let k = 0; k < n; k++) {
+    if (n <= 45 || k % 2 === 0) s += `<text x="${left - 4}" y="${top + k * ch + ch * .8}" text-anchor="end">${(p.stops[k].name || "").slice(0, 24)}</text>`;
+    for (let h = 0; h < 24; h++) {
+      const lv = p.level[h][k], ld = p.load[h][k];
+      s += `<rect x="${left + h * cw}" y="${top + k * ch}" width="${cw - 1}" height="${ch - 1}" fill="${ld > 0.5 ? COL(lv) : COL("line")}" opacity="${ld > 0.5 ? 1 : .5}"><title>${pad(h)}:00 ${p.stops[k].name} → ${p.stops[k + 1].name}: ${LV[lv]} (~${Math.round(ld)} on board), confidence ${p.confidence[h]}</title></rect>`;
+    }
+  }
+  s += `<rect x="${left + hr() * cw - 1}" y="${top - 2}" width="${cw + 1}" height="${n * ch + 3}" fill="none" stroke="${COL("ink")}" stroke-width="1.5"/></svg>`;
+  $("#heat").innerHTML = s;
+  $("#rinfo").innerHTML = `<b>${p.route}</b> · ${p.stops.length} stops · ${p.cap === "9m" ? "9 m feeder bus" : "12 m bus"} · AC share ${Math.round(p.ac_share * 100)}% · rows = stretches in order, columns = hour of day (${dt()}). Outline = selected hour.`;
+  over.clearLayers();
+  const pts = p.stops.map(s => [s.lat, s.lon]);
+  for (let k = 0; k < n; k++) L.polyline([pts[k], pts[k + 1]], {color: COL(p.level[hr()][k]), weight: 7}).bindTooltip(`${p.route} ${p.stops[k].name} → ${p.stops[k + 1].name}: ${LV[p.level[hr()][k]]} (~${Math.round(p.load[hr()][k])})`).addTo(over);
+  map.fitBounds(L.latLngBounds(pts), {padding: [30, 30]});
+}
+
+// ---------------------------------------------------------------- ripple
+$("#ev").onchange = () => { const s = $("#ev").value === "surge"; $("#ev-surge").hidden = !s; $("#ev-route").hidden = s; };
+document.querySelectorAll("[data-w]").forEach(b => b.onclick = () => { $("#where").value = b.dataset.w; });
+map.on("click", e => { if (pane === "ripple" && $("#ev").value === "surge") { $("#where").value = `${e.latlng.lat.toFixed(5)},${e.latlng.lng.toFixed(5)}`; runRipple(); } });
+$("#run").onclick = runRipple;
+const ORD = {1: "1st order · immediately", 2: "2nd order · knock-on", 3: "3rd order · later / further away"};
+async function runRipple(){
+  const ev = $("#ev").value;
+  let url = `/api/ripple?event=${ev}&daytype=${dt()}&hour=${hr()}`;
+  if (ev === "surge") { const [la, lo] = $("#where").value.split(",").map(Number); url += `&lat=${la}&lon=${lo}&riders=${$("#riders").value}`; }
+  else url += `&route=${encodeURIComponent($("#route").value)}`;
+  $("#rip").innerHTML = `<div class="card empty"><span class="spinner"></span></div>`;
+  const r = await fetch(url); const j = await r.json();
+  if (!r.ok) { $("#rip").innerHTML = `<div class="card empty">${j.detail}</div>`; return; }
+  over.clearLayers();
+  let h = `<div class="card"><div class="kpis">
+    <div class="kpi"><b>${j.impacts.length}</b><span class="small muted">effects (${j.counts[1]} / ${j.counts[2]} / ${j.counts[3]} by order)</span></div>
+    <div class="kpi"><b>${j.passenger_minutes_lost.toLocaleString()}</b><span class="small muted">extra passenger-minutes waiting</span></div></div>`;
+  if (j.fix && j.fix.route && ev !== "surge") h += `<div class="note" style="margin-top:8px">${ev === "add" ? "Effect" : "Fix to compare"}: one extra <b>${j.fix.route}</b> bus at ${pad(j.hour)}:00 lowers peak load ${j.fix.peak_before} → ${j.fix.peak_after} per bus (${j.fix.level_before} → ${j.fix.level_after}) and removes ~${j.fix.relief_pax_min.toLocaleString()} crowded passenger-minutes.</div>`;
+  h += `</div>`;
+  let cur = 0;
+  j.impacts.forEach(i => {
+    if (i.order !== cur) { cur = i.order; h += `<div class="order-h">${ORD[cur]}</div>`; }
+    h += `<div class="impact o${i.order}"><div class="when">+${i.t_min} min${i.route ? " · " + i.route : ""}</div><b>${i.title}</b><div class="small">${i.detail}</div><div class="act">→ ${i.action}</div></div>`;
+    const c = i.order === 1 ? COL("packed") : i.order === 2 ? COL("crowded") : COL("standing");
+    if (i.path.length > 1) L.polyline(i.path, {color: c, weight: 9 - 2 * i.order, opacity: .9}).bindTooltip(i.title).addTo(over);
+    else if (i.path.length === 1) L.circleMarker(i.path[0], {radius: 14, color: c, weight: 3, fillOpacity: .15}).addTo(over);
+  });
+  if (ev === "surge") { const [la, lo] = $("#where").value.split(",").map(Number);
+    [300, 600, 900].forEach((rad, k) => L.circle([la, lo], {radius: rad, color: COL("packed"), weight: 1.5, opacity: .7 - k * .2, fill: false}).addTo(over)); }
+  $("#rip").innerHTML = h;
+  const b = []; over.eachLayer(l => { if (l.getLatLngs) b.push(...l.getLatLngs().flat()); else if (l.getLatLng) b.push(l.getLatLng()); });
+  if (b.length) map.fitBounds(L.latLngBounds(b), {padding: [40, 40], maxZoom: 14});
+}
+
+// ---------------------------------------------------------------- validation
+let valLoaded = false;
+async function loadVal(){
+  if (valLoaded) return; valLoaded = true;
+  const r = await fetch("/api/validation"); const v = await r.json();
+  if (!r.ok) { $("#val").innerHTML = `<div class="card empty">Run <code>python -m validation.validate</code> first.</div>`; return; }
+  const hrs = v.peaks.hourly_ticketed_per_day, W = 420, H = 120;
+  const line = (arr, mx, col) => `<polyline fill="none" stroke="${col}" stroke-width="2" points="${arr.map((y, i) => `${20 + i * (W - 30) / 23},${H - 15 - (H - 30) * y / mx}`).join(" ")}"/>`;
+  const mx = Math.max(...hrs.weekday);
+  let s = `<svg class="chart" width="${W}" height="${H}">${[0, 6, 12, 18, 23].map(h => `<text x="${20 + h * (W - 30) / 23}" y="${H - 2}">${pad(h)}h</text>`).join("")}
+    ${line(hrs.weekday, mx, COL("accent"))}${hrs.saturday ? line(hrs.saturday, mx, COL("standing")) : ""}${hrs.sunday ? line(hrs.sunday, mx, COL("crowded")) : ""}</svg>`;
+  const ser = Object.entries(v.daily.series), dmx = Math.max(...ser.map(x => x[1])), bw = (W - 20) / ser.length;
+  let d = `<svg class="chart" width="${W}" height="110">` + ser.map(([day, n], i) => {
+    const dow = new Date(day + "T00:00").getDay(), hol = v.daily.holidays[day];
+    const c = hol ? COL("packed") : dow === 0 || dow === 6 ? COL("standing") : COL("accent");
+    return `<rect x="${10 + i * bw}" y="${95 - 80 * n / dmx}" width="${bw - 2}" height="${80 * n / dmx}" fill="${c}"><title>${day}: ${n.toLocaleString()} tickets${hol ? " (" + hol.name + ")" : ""}</title></rect>`;
+  }).join("") + `<text x="10" y="108">1 Oct</text><text x="${W - 50}" y="108">31 Oct</text></svg>`;
+  const ho = v.holdout, ls = v.level_share_by_hour.weekday;
+  const stack = `<svg class="chart" width="${W}" height="110">` + ls.map((row, h) => { let y = 95; return row.map((f, k) => { const hh = 80 * f; y -= hh; return `<rect x="${20 + h * (W - 30) / 24}" y="${y}" width="${(W - 30) / 24 - 1}" height="${hh}" fill="${COL(KEYS[k])}"><title>${pad(h)}:00 ${LV[KEYS[k]]} ${Math.round(f * 100)}%</title></rect>`; }).join(""); }).join("") +
+    [0, 6, 12, 18, 23].map(h => `<text x="${20 + h * (W - 30) / 24}" y="108">${pad(h)}h</text>`).join("") + `</svg>`;
+  $("#val").innerHTML = `
+    <div class="card"><b>Peaks</b> <span class="small muted">ticketed riders per hour (weekday / Sat / Sun)</span>${s}
+      <div class="small">Morning peak ${pad(v.peaks.am_peak_hour)}:00 (${v.peaks.am_peak_to_midday}× midday), evening ${pad(v.peaks.pm_peak_hour)}:00 (${v.peaks.pm_peak_to_midday}×).</div></div>
+    <div class="card"><b>Crowding by hour</b> <span class="small muted">rider-weighted share of each level, weekdays</span>${stack}
+      <div class="small">Crowded or packed: ${Math.round(v.checks.crowded_or_packed_share_9am * 100)}% at 9am, ${Math.round(v.checks.crowded_or_packed_share_2pm * 100)}% at 2pm, ${Math.round(v.checks.crowded_or_packed_share_6pm * 100)}% at 6pm; Sunday 9am ${Math.round(v.checks.crowded_or_packed_share_sun_9am * 100)}%.</div></div>
+    <div class="card"><b>Every day in October</b> <span class="small muted">weekdays teal, weekends amber, holidays red</span>${d}
+      <div class="small">Saturday ${Math.round(v.daily.saturday_vs_weekday * 100)}% and Sunday ${Math.round(v.daily.sunday_vs_weekday * 100)}% of a weekday. ${Object.values(v.daily.holidays).map(h => `${h.name}: ${Math.round(h.vs_weekday * 100)}%`).join(", ")}.</div></div>
+    <div class="card"><b>Hold-out test</b> <span class="small muted">${ho.train} → predict ${ho.test}</span>
+      <table class="t" style="margin-top:6px"><tr><td>Rank correlation of load per bus</td><td><b>${ho.load_spearman}</b></td></tr>
+      <tr><td>Same crowding level (rider-weighted)</td><td><b>${Math.round(ho.level_exact_rider_weighted * 100)}%</b></td></tr>
+      <tr><td>Within one level</td><td><b>${Math.round(ho.level_within_one_rider_weighted * 100)}%</b></td></tr>
+      <tr><td>Mean abs. error (people per bus)</td><td><b>${ho.load_mae_rider_weighted}</b> of ${ho.mean_load_rider_weighted}</td></tr>
+      <tr><td>Week-to-week rank correlation</td><td><b>${Object.values(v.week_to_week_spearman_route_hour).join(", ")}</b></td></tr>
+      <tr><td>Estimates with high / medium / low confidence</td><td><b>${["high","medium","low"].map(k => Math.round(v.confidence_rider_weighted[k] * 100) + "%").join(" / ")}</b></td></tr></table></div>
+    <div class="card"><b>Busiest stretches at ${pad(v.peaks.am_peak_hour)}:00</b><table class="t">${v.busiest_stretches_am.slice(0, 8).map(s => `<tr><td class="small">${s.stretch}</td><td>${s.riders_per_hour.toLocaleString()}/h</td><td><span class="lvl t-${s.level}"><i class="dot c-${s.level}"></i>${s.worst_route}</span></td></tr>`).join("")}</table></div>`;
+}
+refresh();
+</script>
+</body>
+</html>
